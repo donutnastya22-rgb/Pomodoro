@@ -1,6 +1,6 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><link rel="manifest" href="manifest.json"><meta name="theme-color" content="#F3EDE3"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Pomodoro"><link rel="icon" href="icon-192.png"><link rel="apple-touch-icon" href="icon-192.png"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
 <title>Учёба с Pomodoro</title>
-<meta name="claude:viewport-fit-sides" content="cover">
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&display=swap">
@@ -218,6 +218,11 @@ h1,h2,h3,p{margin:0}
 .sheet .row{display:flex;gap:8px}
 .rng{font-size:14px;color:var(--ink2)}
 
+#login{position:fixed;inset:0;z-index:50;background:var(--bg);overflow-y:auto;padding:max(24px,env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-left,0px)) 24px}
+#login .lw{max-width:420px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+#login h1{font-size:28px;font-weight:700;letter-spacing:-.01em;margin-top:8px}
+#login p{font-size:15px;color:var(--ink2)}
+#login .err{min-height:20px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 @media (max-width:360px){.clock{font-size:50px}.months{gap:8px}.month{padding:10px}}
 </style>
@@ -228,6 +233,9 @@ h1,h2,h3,p{margin:0}
   <nav class="nav dim" id="nav" aria-label="Разделы"></nav>
 </div>
 
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <script>
 (function(){
 'use strict';
@@ -283,19 +291,19 @@ function save(){try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){}}
 function prune(){var ws=dkey(mondayOf(new Date()));S.sessions=(S.sessions||[]).filter(function(x){return x&&x.d>=ws;});}
 prune();
 
-var DB=null,UID=null,USER=null,ME=null,syncT=0,syncBusy=false;
+var DB=null,UID=null,USER=null,ME=null,syncT=0,syncBusy=false,chatUnsub=null,MYNAME='';
 function touch(){S.updated=Date.now();save();pushSoon();}
 function pushSoon(){if(!DB||!UID)return;clearTimeout(syncT);syncT=setTimeout(push,1500);}
 async function push(){
   if(!DB||!UID)return;
   if(syncBusy){syncT=setTimeout(push,1500);return;}
   syncBusy=true;
-  try{await DB.doc('data/users/'+UID+'/app').set({settings:S.settings,goals:S.goals,sessions:S.sessions,daily:S.daily,recent:S.recent,norms:S.norms,updated:S.updated});}catch(e){}
+  try{await DB.doc('users/'+UID+'/private/app').set({settings:S.settings,goals:S.goals,sessions:S.sessions,daily:S.daily,recent:S.recent,norms:S.norms,updated:S.updated});}catch(e){}
   syncBusy=false;
 }
 async function pull(){
   try{
-    var snap=await DB.doc('data/users/'+UID+'/app').get();
+    var snap=await DB.doc('users/'+UID+'/private/app').get();
     if(snap.exists){
       var r=JSON.parse(JSON.stringify(snap.data()));
       if((r.updated||0)>(S.updated||0)){
@@ -466,7 +474,7 @@ function renderSettings(){
    row('focus','Фокус, минут')+row('brk','Перерыв, минут')+row('longBrk','Длинный перерыв, минут')+row('longEvery','Длинный перерыв после, сессий')+
    '</div><div class="sec">Основное</div><div class="card">'+
    sw('autoBreak','Автозапуск перерывов')+sw('autoFocus','Автозапуск фокус-сессий')+sw('wake','Не гасить экран','Пока идёт таймер')+
-   '</div></div>';
+   '</div><div class="sec">Аккаунт</div><div class="card"><div class="srow"><div class="t">'+esc(MYNAME)+'<small>Вы вошли в приложение</small></div><button class="btn ghost" style="flex:none;min-height:44px;font-size:15px" data-act="logout">Выйти</button></div></div></div>';
 }
 function setVal(key,v){
   var l=LIM[key];v=Math.round(Number(v));if(!isFinite(v))return false;
@@ -660,14 +668,10 @@ function paintShare(){
   }
   p.innerHTML=h;
 }
-async function resolveNames(){
-  var ids={};chatDocs.forEach(function(m){if(m.uid&&m.uid!==UID)ids[m.uid]=1;});
-  var list=Object.keys(ids);if(!list.length||!USER)return;
-  try{var ps=await USER.profiles(list);list.forEach(function(id){names[id]=(ps[id]&&ps[id].name)||'Участник';});}catch(e){}
-}
+async function resolveNames(){chatDocs.forEach(function(m){if(m.uid&&m.name)names[m.uid]=m.name;});}
 function subscribeChat(){
   var t=setTimeout(function(){if(chatStatus==='wait'){chatStatus='slow';paintMsgs();}},10000);
-  DB.collection('chat').orderBy('ts','desc').limit(150).onSnapshot(async function(snap){
+  if(chatUnsub)chatUnsub();chatStatus='wait';chatUnsub=DB.collection('chat').orderBy('ts','desc').limit(150).onSnapshot(async function(snap){
     clearTimeout(t);
     chatDocs=snap.docs.map(function(d){var o=d.data()||{};o.id=d.id;return o;}).reverse();
     chatStatus='ready';
@@ -678,7 +682,7 @@ function subscribeChat(){
 async function sendMsg(obj){
   chatErr='';
   if(!DB||!UID){chatErr='Чтобы писать в чат, нужна учётная запись.';paintMsgs();return false;}
-  try{await DB.collection('chat').add(Object.assign({uid:UID,ts:Date.now()},obj));return true;}
+  try{await DB.collection('chat').add(Object.assign({uid:UID,ts:Date.now(),name:MYNAME},obj));return true;}
   catch(e){chatErr='Сообщение не отправилось. Проверьте интернет и доступ к приложению.';paintMsgs();return false;}
 }
 
@@ -710,6 +714,7 @@ document.addEventListener('click',async function(e){
     case 'nname':normName=el.dataset.t;render();break;
     case 'nadd':addNorm();break;
     case 'ndel':S.norms.items=S.norms.items.filter(function(x){return x.id!==el.dataset.id;});touch();render();break;
+    case 'logout':try{await firebase.auth().signOut();}catch(er){}break;
     case 'send':doSend();break;
     case 'shareopen':shareOpen=true;paintShare();break;
     case 'shareno':shareOpen=false;paintShare();break;
@@ -869,15 +874,53 @@ function bannerHtml(cls){
 
 /* ---------- boot ---------- */
 render();
-(async function(){
-  if(!(window.claude&&window.claude.use)){chatStatus='off';paintMsgs();return;}
-  try{USER=await claude.use('user');}catch(e){}
-  try{DB=await claude.use('db');}catch(e){}
-  if(USER){try{ME=await USER.me();UID=ME&&ME.id;}catch(e){}}
-  if(!DB){chatStatus='off';paintMsgs();return;}
-  if(UID)pull();
-  subscribeChat();
-})();
+var FB_CFG={
+  apiKey:"AIzaSyASSqMUzkvs-DOdD5reatNkxXmfPMdeOew",
+  authDomain:"pomodoro-4bb1e.firebaseapp.com",
+  projectId:"pomodoro-4bb1e",
+  storageBucket:"pomodoro-4bb1e.firebasestorage.app",
+  messagingSenderId:"435591943571",
+  appId:"1:435591943571:web:117370d65cbe36b7390466"
+};
+function nameOf(u){var n=u.displayName||(u.email||'').split('@')[0]||'Участник';return n.charAt(0).toUpperCase()+n.slice(1);}
+function loginMsg(code){
+  if(code==='auth/network-request-failed')return 'Нет соединения с интернетом.';
+  if(code==='auth/too-many-requests')return 'Слишком много попыток. Подождите немного и попробуйте снова.';
+  if(code==='auth/invalid-email')return 'Проверьте адрес почты.';
+  return 'Неверная почта или пароль.';
+}
+function showLogin(){
+  var el=document.getElementById('login');
+  if(!el){el=document.createElement('div');el.id='login';document.body.appendChild(el);}
+  el.innerHTML='<div class="lw">'+bannerHtml('')+'<h1>Pomodoro</h1><p>Войдите в свой аккаунт. Он создаётся заранее, регистрации в приложении нет.</p>'+
+    '<input id="lemail" class="field" type="email" autocomplete="username" placeholder="Почта" aria-label="Почта">'+
+    '<input id="lpass" class="field" type="password" autocomplete="current-password" placeholder="Пароль" aria-label="Пароль">'+
+    '<div class="err" id="lerr" role="alert"></div><button class="btn primary" id="lgo">Войти</button></div>';
+  function go(){
+    var e=document.getElementById('lemail').value.trim(),p=document.getElementById('lpass').value;
+    var er=document.getElementById('lerr');
+    if(!e||!p){er.textContent='Введите почту и пароль.';return;}
+    er.textContent='';
+    firebase.auth().signInWithEmailAndPassword(e,p).catch(function(x){er.textContent=loginMsg(x&&x.code);});
+  }
+  document.getElementById('lgo').onclick=go;
+  document.getElementById('lpass').onkeydown=function(ev){if(ev.key==='Enter')go();};
+}
+function hideLogin(){var el=document.getElementById('login');if(el)el.remove();}
+function startSession(u){
+  UID=u.uid;MYNAME=nameOf(u);names={};hideLogin();
+  pull();subscribeChat();render();
+}
+function endSession(){
+  if(chatUnsub){chatUnsub();chatUnsub=null;}
+  UID=null;chatDocs=[];chatStatus='wait';showLogin();
+}
+if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('sw.js').catch(function(){});});}
+try{
+  firebase.initializeApp(FB_CFG);
+  DB=firebase.firestore();
+  firebase.auth().onAuthStateChanged(function(u){if(u)startSession(u);else endSession();});
+}catch(e){chatStatus='error';showLogin();}
 })();
 </script>
 
